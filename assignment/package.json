@@ -1,0 +1,30 @@
+{
+  "name": "collaborative-notes-app",
+  "version": "1.0.0",
+  "description": "Real-time collaborative note-taking application",
+  "main": "index.js",
+  "scripts": {
+    "install-all": "cd backend && npm install && cd ../note_app && npm install",
+    "dev": "concurrently \"cd backend && npm run dev\" \"cd note_app && npm run dev\"",
+    "start": "cd backend && npm start",
+    "build": "cd note_app && npm run build"
+  },
+  "keywords": [
+    "collaborative",
+    "notes",
+    "real-time",
+    "websocket",
+    "react",
+    "nodejs",
+    "mongodb"
+  ],
+  "author": "Jaydeep Saroj <jaydeepjnvmzp2002@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^7.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/collaborative-notes"
+  }
+}
