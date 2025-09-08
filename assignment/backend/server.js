@@ -11,29 +11,46 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"],
+  credentials: true
+}));
 app.use(express.json());
 
 // MongoDB connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://jaydeepjnvmzp2002_db_user:<db_password>@cluster0.lymhals.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
-.then(() => console.log('Connected to MongoDB'))
-.catch(err => console.error('MongoDB connection error:', err));
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/collaborative_notes')
+.then(() => console.log('✅ Connected to MongoDB'))
+.catch(err => console.error('❌ MongoDB connection error:', err));
 
 // Store active users for each note room with detailed info
-const activeUsers = new Map();
-const userSessions = new Map(); // Store user session data
+const activeUsers = new Map(); // noteId -> [user objects]
+const userSessions = new Map(); // socketId -> userData
 const userColors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'];
 let colorIndex = 0;
 
+// Generate unique user data
+function createUserData(socketId, userName = null) {
+  return {
+    id: socketId,
+    name: userName || `User ${Math.floor(Math.random() * 1000)}`,
+    color: userColors[colorIndex % userColors.length],
+    cursor: { x: 0, y: 0 },
+    isTyping: false,
+    lastSeen: new Date(),
+    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${socketId}`,
+    currentRoom: null
+  };
+}
+
 // API Routes
-// Create a new note
-app.post('/api/notes', async (req, res) => {
+app.post('/notes', async (req, res) => {
   try {
     const { title } = req.body;
     if (!title || title.trim() === '') {
@@ -50,8 +67,7 @@ app.post('/api/notes', async (req, res) => {
   }
 });
 
-// Get note by ID
-app.get('/api/notes/:id', async (req, res) => {
+app.get('/notes/:id', async (req, res) => {
   try {
     const note = await Note.findById(req.params.id);
     if (!note) {
@@ -64,8 +80,7 @@ app.get('/api/notes/:id', async (req, res) => {
   }
 });
 
-// Update note content (fallback if socket fails)
-app.put('/api/notes/:id', async (req, res) => {
+app.put('/notes/:id', async (req, res) => {
   try {
     const { title, content } = req.body;
     const note = await Note.findById(req.params.id);
@@ -87,32 +102,70 @@ app.put('/api/notes/:id', async (req, res) => {
   }
 });
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    activeConnections: io.engine.clientsCount,
+    activeRooms: activeUsers.size,
+    totalUsers: userSessions.size,
+    mongooseConnection: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+});
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log(`🔌 New user connected: ${socket.id}`);
+
+  // Create user data
+  const userData = createUserData(socket.id);
+  userSessions.set(socket.id, userData);
+  colorIndex++;
+
+  // Handle connection errors
+  socket.on('error', (error) => {
+    console.error(`Socket error for ${socket.id}:`, error);
+  });
 
   // Join a note room
-  socket.on('join_note', async (noteId) => {
+  socket.on('join_note', async (noteId, userName) => {
     try {
+      console.log(`User ${socket.id} attempting to join note ${noteId}`);
+      
+      // Update user name if provided
+      if (userName && userName.trim()) {
+        userData.name = userName.trim();
+        userSessions.set(socket.id, userData);
+      }
+      
       // Verify note exists
       const note = await Note.findById(noteId);
       if (!note) {
+        console.error(`Note ${noteId} not found`);
         socket.emit('error', { message: 'Note not found' });
         return;
       }
 
       // Leave previous room if any
-      if (socket.currentRoom) {
-        socket.leave(socket.currentRoom);
-        removeUserFromRoom(socket.currentRoom, socket.id);
+      if (userData.currentRoom) {
+        socket.leave(userData.currentRoom);
+        removeUserFromRoom(userData.currentRoom, socket.id);
+        
+        // Notify previous room
+        socket.to(userData.currentRoom).emit('user_left', {
+          user: userData,
+          activeUsers: activeUsers.get(userData.currentRoom) || [],
+        });
       }
 
       // Join new room
       socket.join(noteId);
-      socket.currentRoom = noteId;
+      userData.currentRoom = noteId;
+      userSessions.set(socket.id, userData);
       
-      // Add user to active users
-      addUserToRoom(noteId, socket.id);
+      // Add user to room
+      addUserToRoom(noteId, userData);
       
       // Send current note content
       socket.emit('note_content', {
@@ -121,18 +174,22 @@ io.on('connection', (socket) => {
         updatedAt: note.updatedAt
       });
 
-      // Notify others about new user
+      // Get current users in room
+      const roomUsers = activeUsers.get(noteId) || [];
+
+      // Send to the joining user
+      socket.emit('active_users', roomUsers);
+
+      // Notify others in the room
       socket.to(noteId).emit('user_joined', {
-        userId: socket.id,
-        activeUsers: getActiveUsersForRoom(noteId)
+        user: userData,
+        activeUsers: roomUsers,
       });
 
-      // Send current active users to the new user
-      socket.emit('active_users', getActiveUsersForRoom(noteId));
+      console.log(`✅ User ${userData.name} successfully joined note ${noteId}`);
 
-      console.log(`User ${socket.id} joined note ${noteId}`);
     } catch (error) {
-      console.error('Error joining note:', error);
+      console.error('❌ Error joining note:', error);
       socket.emit('error', { message: 'Failed to join note' });
     }
   });
@@ -142,7 +199,8 @@ io.on('connection', (socket) => {
     try {
       const { noteId, title, content } = data;
       
-      if (!socket.currentRoom || socket.currentRoom !== noteId) {
+      if (!userData.currentRoom || userData.currentRoom !== noteId) {
+        console.error(`User ${socket.id} not in room ${noteId}`);
         socket.emit('error', { message: 'Not in this note room' });
         return;
       }
@@ -150,6 +208,7 @@ io.on('connection', (socket) => {
       // Update note in database
       const note = await Note.findById(noteId);
       if (!note) {
+        console.error(`Note ${noteId} not found for update`);
         socket.emit('error', { message: 'Note not found' });
         return;
       }
@@ -160,59 +219,144 @@ io.on('connection', (socket) => {
       note.updatedAt = new Date();
       await note.save();
 
-      // Broadcast update to all users in the room (including sender)
-      io.to(noteId).emit('note_updated', {
+      // Broadcast update to all users in the room (excluding sender)
+      socket.to(noteId).emit('note_updated', {
         title: note.title,
         content: note.content,
         updatedAt: note.updatedAt,
-        updatedBy: socket.id
+        updatedBy: socket.id,
+        updatedByName: userData.name,
       });
 
+      console.log(`📝 Note ${noteId} updated by user ${userData.name}`);
+
     } catch (error) {
-      console.error('Error updating note:', error);
+      console.error('❌ Error updating note:', error);
       socket.emit('error', { message: 'Failed to update note' });
     }
   });
 
-  // Handle disconnection
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    
-    if (socket.currentRoom) {
-      removeUserFromRoom(socket.currentRoom, socket.id);
-      
-      // Notify others about user leaving
-      socket.to(socket.currentRoom).emit('user_left', {
+  // Handle user name change
+  socket.on('change_name', (newName) => {
+    try {
+      if (newName && newName.trim()) {
+        const oldName = userData.name;
+        userData.name = newName.trim();
+        userSessions.set(socket.id, userData);
+
+        if (userData.currentRoom) {
+          const roomUsers = activeUsers.get(userData.currentRoom) || [];
+          const updatedUsers = roomUsers.map((user) =>
+            user.id === socket.id ? userData : user
+          );
+          activeUsers.set(userData.currentRoom, updatedUsers);
+
+          // Notify all users in the room including sender
+          io.to(userData.currentRoom).emit('user_name_changed', {
+            userId: socket.id,
+            user: userData,
+            oldName,
+            activeUsers: updatedUsers,
+          });
+        }
+
+        console.log(`👤 ${oldName} changed name to ${userData.name}`);
+      }
+    } catch (error) {
+      console.error('Error changing name:', error);
+    }
+  });
+
+  // Handle typing events
+  socket.on('typing_start', () => {
+    if (userData.currentRoom) {
+      userData.isTyping = true;
+      socket.to(userData.currentRoom).emit('user_typing', {
         userId: socket.id,
-        activeUsers: getActiveUsersForRoom(socket.currentRoom)
+        isTyping: true,
+        user: userData
       });
+    }
+  });
+
+  socket.on('typing_stop', () => {
+    if (userData.currentRoom) {
+      userData.isTyping = false;
+      socket.to(userData.currentRoom).emit('user_typing', {
+        userId: socket.id,
+        isTyping: false,
+        user: userData
+      });
+    }
+  });
+
+  // Handle disconnection
+  socket.on('disconnect', (reason) => {
+    console.log(`🔌 User disconnected: ${userData.name} (${socket.id}), reason: ${reason}`);
+    
+    if (userData.currentRoom) {
+      removeUserFromRoom(userData.currentRoom, socket.id);
+      
+      // Notify others in the room
+      socket.to(userData.currentRoom).emit('user_left', {
+        user: userData,
+        activeUsers: activeUsers.get(userData.currentRoom) || [],
+      });
+      
+      console.log(`👋 User ${userData.name} left room ${userData.currentRoom}`);
+    }
+
+    // Clean up user session
+    userSessions.delete(socket.id);
+  });
+
+  // Handle manual leave room
+  socket.on('leave_note', () => {
+    if (userData.currentRoom) {
+      const roomId = userData.currentRoom;
+      removeUserFromRoom(roomId, socket.id);
+      
+      socket.leave(roomId);
+      userData.currentRoom = null;
+      
+      // Notify others
+      socket.to(roomId).emit('user_left', {
+        user: userData,
+        activeUsers: activeUsers.get(roomId) || [],
+      });
+      
+      console.log(`🚪 User ${userData.name} manually left room ${roomId}`);
     }
   });
 });
 
 // Helper functions for managing active users
-function addUserToRoom(noteId, userId) {
-  if (!activeUsers.has(noteId)) {
-    activeUsers.set(noteId, new Set());
+function addUserToRoom(noteId, userData) {
+  let roomUsers = activeUsers.get(noteId) || [];
+  
+  // Remove user if already exists (prevent duplicates)
+  roomUsers = roomUsers.filter(user => user.id !== userData.id);
+  
+  // Add user
+  roomUsers.push(userData);
+  activeUsers.set(noteId, roomUsers);
+}
+
+function removeUserFromRoom(noteId, socketId) {
+  const roomUsers = activeUsers.get(noteId) || [];
+  const updatedUsers = roomUsers.filter((user) => user.id !== socketId);
+  
+  if (updatedUsers.length === 0) {
+    activeUsers.delete(noteId); // Clean up empty rooms
+  } else {
+    activeUsers.set(noteId, updatedUsers);
   }
-  activeUsers.get(noteId).add(userId);
 }
 
-function removeUserFromRoom(noteId, userId) {
-  if (activeUsers.has(noteId)) {
-    activeUsers.get(noteId).delete(userId);
-    if (activeUsers.get(noteId).size === 0) {
-      activeUsers.delete(noteId);
-    }
-  }
-}
-
-function getActiveUsersForRoom(noteId) {
-  return activeUsers.has(noteId) ? activeUsers.get(noteId).size : 0;
-}
-
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📡 Socket.IO server ready`);
+  console.log(`🌐 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🔧 CORS enabled for: localhost:5173, 127.0.0.1:5173, localhost:3000, 127.0.0.1:3000`);
 });
-

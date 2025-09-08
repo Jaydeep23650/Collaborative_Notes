@@ -26,6 +26,7 @@ const EnhancedNoteEditor = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [userName, setUserName] = useState("");
   const [showNameModal, setShowNameModal] = useState(false);
+  const [isChangingName, setIsChangingName] = useState(false);
 
   // Initialize socket connection and fetch note data
   useEffect(() => {
@@ -333,13 +334,37 @@ const EnhancedNoteEditor = () => {
   const handleNameSubmit = (e) => {
     e.preventDefault();
     if (userName.trim()) {
-      localStorage.setItem("collaborative-notes-username", userName.trim());
+      const trimmedName = userName.trim();
+      localStorage.setItem("collaborative-notes-username", trimmedName);
+      setUserName(trimmedName);
       setShowNameModal(false);
 
-      if (socketRef.current && isConnected) {
-        // First change name, then join the room
-        socketRef.current.emit("change_name", userName.trim());
-        socketRef.current.emit("join_note", id, userName.trim());
+      if (isChangingName) {
+        // User is changing their name
+        if (socketRef.current && isConnected) {
+          socketRef.current.emit("change_name", trimmedName);
+        }
+        setIsChangingName(false);
+      } else {
+        // User is joining for the first time
+        // Wait for socket connection if not connected yet
+        if (socketRef.current) {
+          if (isConnected) {
+            // Socket is connected, join immediately
+            socketRef.current.emit("join_note", id, trimmedName);
+          } else {
+            // Socket not connected yet, wait for connection
+            console.log("Waiting for socket connection to join note...");
+            const checkConnection = () => {
+              if (socketRef.current && isConnected) {
+                socketRef.current.emit("join_note", id, trimmedName);
+              } else {
+                setTimeout(checkConnection, 100);
+              }
+            };
+            checkConnection();
+          }
+        }
       }
     }
   };
@@ -448,28 +473,67 @@ const EnhancedNoteEditor = () => {
       {/* Name Modal */}
       {showNameModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 w-96">
-            <h3 className="text-xl font-semibold mb-4">
-              Welcome! What's your name?
-            </h3>
-            <form onSubmit={handleNameSubmit}>
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="Enter your name..."
-                className="input w-full mb-4"
-                autoFocus
-                maxLength={50}
-              />
-              <button
-                type="submit"
-                className="btn btn-primary w-full"
-                disabled={!userName.trim()}
-              >
-                Join Note
-              </button>
+          <div className="bg-white rounded-xl p-8 w-96 max-w-sm mx-4 shadow-2xl">
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl">👋</span>
+              </div>
+              <h3 className="text-2xl font-bold text-gray-800 mb-2">
+                {isChangingName ? "Change Your Name" : "Welcome to the Note!"}
+              </h3>
+              <p className="text-gray-600">
+                {isChangingName ? "Enter your new name:" : "What should we call you?"}
+              </p>
+            </div>
+            
+            <form onSubmit={handleNameSubmit} className="space-y-4">
+              <div>
+                <input
+                  type="text"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  placeholder="Enter your name..."
+                  className="input w-full text-center text-lg"
+                  autoFocus
+                  maxLength={30}
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1 text-center">
+                  {userName.length}/30 characters
+                </p>
+              </div>
+              
+              <div className="flex gap-3">
+                {isChangingName && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowNameModal(false);
+                      setIsChangingName(false);
+                    }}
+                    className="btn btn-secondary flex-1 py-3 text-lg font-semibold"
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className={`btn btn-primary ${isChangingName ? 'flex-1' : 'w-full'} py-3 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed`}
+                  disabled={!userName.trim()}
+                >
+                  {isChangingName 
+                    ? (userName.trim() ? `Change to ${userName.trim()}` : 'Enter new name')
+                    : (userName.trim() ? `Join as ${userName.trim()}` : 'Enter your name')
+                  }
+                </button>
+              </div>
             </form>
+            
+            <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
+              <p className="text-sm text-blue-800 text-center">
+                💡 <strong>Tip:</strong> Your name will be visible to other collaborators
+              </p>
+            </div>
           </div>
         </div>
       )}
@@ -503,6 +567,28 @@ const EnhancedNoteEditor = () => {
               {activeUsers.length}{" "}
               {activeUsers.length === 1 ? "collaborator" : "collaborators"}
             </div>
+            
+            {currentUser && (
+              <div className="flex items-center gap-2">
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-semibold"
+                  style={{ backgroundColor: currentUser.color }}
+                >
+                  {currentUser.name.charAt(0).toUpperCase()}
+                </div>
+                <span className="text-sm text-gray-700">{currentUser.name}</span>
+                <button
+                  onClick={() => {
+                    setIsChangingName(true);
+                    setShowNameModal(true);
+                  }}
+                  className="text-xs text-primary-600 hover:text-primary-700 underline"
+                  title="Change name"
+                >
+                  Edit
+                </button>
+              </div>
+            )}
 
             <button
               className="btn btn-secondary flex items-center gap-2 px-4 py-2"

@@ -1,15 +1,18 @@
 import React from 'react';
 
 const UserPresence = ({ users, currentUser }) => {
+  // Ensure users is always an array
+  const usersArray = Array.isArray(users) ? users : [];
+  
   return (
     <div className="bg-white rounded-lg shadow-lg p-4 border border-gray-100">
       <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
         <span>👥</span>
-        Active Collaborators ({users.length})
+        Active Collaborators ({usersArray.length})
       </h3>
       
       <div className="space-y-3">
-        {users.map((user) => (
+        {usersArray.map((user) => (
           <div
             key={user.id}
             className={`flex items-center gap-3 p-3 rounded-lg transition-all duration-200 ${
@@ -70,7 +73,7 @@ const UserPresence = ({ users, currentUser }) => {
         ))}
       </div>
       
-      {users.length === 0 && (
+      {usersArray.length === 0 && (
         <div className="text-center py-8 text-gray-500">
           <div className="text-4xl mb-2">👤</div>
           <p>No other collaborators</p>
